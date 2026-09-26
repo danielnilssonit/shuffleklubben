@@ -14,4 +14,4 @@ Spelarna hittar varandra via öppna MQTT-servrar (inga konton, ingen egen server
 så ett kast skickas bara som fart och riktning och blir exakt likadant på alla skärmar. Den som skapar bordet räknar poängen.
 Namnen man väljer syns för andra i lobbyn.
 
-3D-modellerna är gjorda i Blender, musiken med Suno och spelet använder Three.js. Den här mappen byggs automatiskt (tools/build-pages.mjs i projektet).
+3D-modellerna är gjorda i Blender, musiken med Suno, speakern, stamgästernas röster och ljuden med ElevenLabs, och spelet använder Three.js. Den här mappen byggs automatiskt (tools/build-pages.mjs i projektet).
