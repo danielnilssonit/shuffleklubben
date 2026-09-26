@@ -4625,6 +4625,8 @@ const Main = (() => {
   return A;
 })();
 
+if (/[?&]debug\b/.test(location.search)) window.SK = {Game, Net, Mqtt, Rules, Phys, TABLE, AI, Scene, Cam, Pucks, Menu, HUD, Aim, Sound, Time, Settings, Profile, Stats, Post, ModelLib, Anim, Bus};
+
 Main.boot();
 })();
 </script>
