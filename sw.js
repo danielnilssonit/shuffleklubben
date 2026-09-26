@@ -1,5 +1,5 @@
 // Shuffleklubben: sparar spelet i webbläsaren så att det startar även utan internet
-const CACHE = 'shuffle-fa1793dce8';
+const CACHE = 'shuffle-0aaefdcccd';
 const CORE = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './favicon-32.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(async c => {
