@@ -3551,7 +3551,9 @@ const Menu = (() => {
     const s = sheet(h('div', null, h('h2', null, 'Shuffleklubben'), h('p', null, text), h('div', {class: 'actions'}, btn('OK', () => { s.close(); if (cb) cb(); }, 'primary'))), {noClose: true});
   };
   M.confirm = (text, yes = 'Ja', no = 'Avbryt') => new Promise(res => {
-    const s = sheet(h('div', null, h('h2', null, text), h('div', {class: 'actions'}, btn(no, () => { s.close(); res(false); }), btn(yes, () => { s.close(); res(true); }, 'primary'))), {onClose: () => res(false)});
+    // svaret först: close() anropar onClose (som svarar nej), så svaret måste ges innan dialogen stängs
+    const answer = v => () => { res(v); s.close(); };
+    const s = sheet(h('div', null, h('h2', null, text), h('div', {class: 'actions'}, btn(no, answer(false)), btn(yes, answer(true), 'primary'))), {onClose: () => res(false)});
   });
 
   /* ---------- Titelskärmen ---------- */
