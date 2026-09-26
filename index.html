@@ -1341,7 +1341,6 @@ const Sound = (() => {
   // iPhone och iPad släpper bara fram ljud som startas av ett tryck. Anropas vid varje tryck tills det har lyckats.
   A.unlock = () => {
     try {
-      A.primeSpeech();
       ensure();
       if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
       Tracks.prime();
@@ -1625,11 +1624,14 @@ const Sound = (() => {
     return sv.find(v => /alva|google|natural|neural|online/i.test(v.name)) || sv[0] || null;
   }
   if (hasTts()) { try { speechSynthesis.addEventListener('voiceschanged', () => { voice = pickVoice(); }); } catch (e) { /* äldre webbläsare */ } }
-  // iPhone släpper bara fram tal som startats av ett tryck: ett tyst yttrande vid första trycket
+  // iPhone släpper bara fram tal som startats av ett tryck: ett tyst yttrande vid första siktet i en match
+  // (inte i menyn: talet kan ta över ljudet i telefonen och pausa musiken). Musiken och effekterna startas om
+  // efteråt ifall telefonen pausade dem.
   A.primeSpeech = () => {
-    if (sayPrimed || !hasTts()) return;
+    if (sayPrimed || !hasTts() || !Settings.speaker || quiet) return;
     sayPrimed = true;
-    try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } catch (e) { /* valfritt */ }
+    try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; u.onend = u.onerror = () => setTimeout(A.restore, 120); speechSynthesis.speak(u); } catch (e) { /* valfritt */ }
+    setTimeout(A.restore, 600);
   };
   // prio: högre avbryter lägre (3 = hängare och vinnare, 2 = omgången, 1 = småprat)
   A.say = (text, prio = 1) => {
@@ -1643,7 +1645,10 @@ const Sound = (() => {
       const u = new SpeechSynthesisUtterance(text);
       u.voice = voice; u.lang = voice.lang; u.rate = 1.05; u.pitch = 1; u.volume = clamp(Settings.sfx * 1.1, 0, 1);
       sayPrio = prio; sayUntil = now + 500 + text.length * 75;
+      // efter talet: starta musiken och effekterna igen om telefonen pausade dem
+      u.onend = u.onerror = () => setTimeout(A.restore, 120);
       speechSynthesis.speak(u);
+      setTimeout(A.restore, 900 + text.length * 90);
     } catch (e) { /* tal är valfritt */ }
   };
 
@@ -2734,219 +2739,6 @@ const Pucks = (() => {
   return P;
 })();
 
-/* ---- 07b-figures.js ---- */
-/* ================= Figurerna vid bordet ================= */
-// De som inte kastar står vid bortre änden av bordet och tittar på: en rundad kropp i spelarens färg, figuren
-// (emojin) som ansikte och svävande handskar. De följer pucken med blicken och reagerar: jublar när den egna sidan
-// lyckas, tar sig för huvudet när en egen puck åker av och applåderar snygga kast. Den som kastar står vid
-// den närmsta änden (där kameran är) och syns inte.
-const Figures = (() => {
-  const F = {};
-  const {L} = TABLE;
-  let list = [];                  // {seat, g, body, head, hands, slot, vis, react, t0, phase, side}
-  let geo = null, skinMat = null, shadowTex = null, throwerSeat = -1, look = null;
-  // platserna: bakom bortre änden, vända mot den som kastar (ansiktena syns från kastlinjen)
-  const SLOTS = [{x: -0.44, y: L + 0.46, yaw: 0.06}, {x: 0.44, y: L + 0.46, yaw: -0.06}, {x: -1.02, y: L + 0.2, yaw: 0.3}, {x: 1.02, y: L + 0.2, yaw: -0.3}];
-  const SIZE = 0.86;
-
-  function init() {
-    if (geo) return;
-    // kroppen: en rundad böna (ingen hals, huvudet svävar strax ovanför)
-    const prof = [[0, 0], [0.17, 0.01], [0.215, 0.08], [0.235, 0.3], [0.235, 0.62], [0.222, 0.86], [0.19, 1.0], [0.13, 1.09], [0.06, 1.13], [0, 1.14]].map(([r, y]) => new THREE.Vector2(r, y));
-    geo = {
-      body: new THREE.LatheGeometry(prof, 28),
-      head: new THREE.SphereGeometry(0.165, 32, 20),
-      hand: new THREE.SphereGeometry(0.058, 16, 12),
-      shadow: new THREE.PlaneGeometry(0.75, 0.75).rotateX(-Math.PI / 2)
-    };
-    skinMat = new THREE.MeshStandardMaterial({color: 0xf5f1ea, roughness: 0.45, emissive: 0x2a2520});
-    const c = document.createElement('canvas'); c.width = c.height = 64;
-    const g = c.getContext('2d'), gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
-    gr.addColorStop(0, 'rgba(0,0,0,.55)'); gr.addColorStop(.6, 'rgba(0,0,0,.25)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
-    g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
-    shadowTex = new THREE.CanvasTexture(c);
-  }
-
-  // Ansiktet: emojin framtill på huvudet (sfärens framsida ligger vid u = 0,25), resten i en ljusare ton av färgen
-  function faceTexture(avatar, hex) {
-    const c = document.createElement('canvas'); c.width = 512; c.height = 256;
-    const g = c.getContext('2d');
-    const base = new THREE.Color(hex).lerp(new THREE.Color(0xffffff), 0.35);
-    g.fillStyle = '#' + base.getHexString(); g.fillRect(0, 0, 512, 256);
-    g.font = '118px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText(avatar || '🙂', 128, 134);
-    const t = new THREE.CanvasTexture(c);
-    t.encoding = THREE.sRGBEncoding;
-    t.anisotropy = 4;
-    return t;
-  }
-
-  function make(seat, s) {
-    init();
-    const hex = (Rules.COLORS[s.color] || Rules.COLORS.red).hex;
-    const col = new THREE.Color(hex);
-    const g = new THREE.Group();
-    const body = new THREE.Mesh(geo.body, new THREE.MeshStandardMaterial({color: col, roughness: 0.6, emissive: col.clone().multiplyScalar(0.12)}));
-    const head = new THREE.Mesh(geo.head, new THREE.MeshStandardMaterial({map: faceTexture(s.avatar || s.av, hex), roughness: 0.5, emissive: 0x201814}));
-    head.position.y = 1.31;
-    head.rotation.y = 0;
-    const hands = [new THREE.Mesh(geo.hand, skinMat), new THREE.Mesh(geo.hand, skinMat)];
-    const shadow = new THREE.Mesh(geo.shadow, new THREE.MeshBasicMaterial({map: shadowTex, transparent: true, depthWrite: false}));
-    shadow.position.y = 0.004;
-    g.add(body, head, hands[0], hands[1], shadow);
-    g.traverse(o => { if (o.isMesh) o.userData.noEnv = true; });
-    g.visible = false;
-    Scene.scene.add(g);
-    return {seat, g, body, head, hands, slot: -1, vis: 0, react: null, t0: 0, phase: Math.random() * 6.28, color: s.color, avatar: s.avatar || s.av};
-  }
-  function dispose(f) {
-    Scene.scene.remove(f.g);
-    f.body.material.dispose();
-    if (f.head.material.map) f.head.material.map.dispose();
-    f.head.material.dispose();
-  }
-
-  // Figurer för matchens spelare (byts om spelarna, färgerna eller figurerna ändras)
-  F.sync = m => {
-    if (!m || m.practice || !Scene.scene) { F.clear(); return; }
-    const key = m.seats.map(s => s.color + (s.avatar || s.av)).join();
-    if (list.length && list.key === key) return;
-    F.clear();
-    list = m.seats.map((s, i) => make(i, s));
-    list.key = key;
-    F.setTurn(Rules.current(m));
-  };
-  F.clear = () => { list.forEach(dispose); list = []; throwerSeat = -1; };
-  // Den som kastar står vid närmsta änden; de andra fördelas på platserna vid bortre änden
-  F.setTurn = seat => {
-    throwerSeat = seat;
-    let k = 0;
-    list.forEach(f => { f.slot = f.seat === seat ? -1 : (k < SLOTS.length ? k++ : -1); });
-  };
-  // Vart tittar de? (pucken som rör sig, annars bordets bortre ände)
-  F.lookAt = (x, y) => { look = x == null ? null : {x, y}; };
-  // kind: 'cheer' (jubel), 'dismay' (för huvudet), 'clap' (applåd)
-  F.react = (seat, kind, delay = 0) => {
-    const f = list.find(x => x.seat === seat);
-    if (!f) return;
-    setTimeout(() => { if (list.includes(f)) { f.react = kind; f.t0 = performance.now(); } }, delay);
-  };
-  F.reactSide = (m, side, kind, delay = 0) => list.forEach(f => { if (Rules.side(m, f.seat) === side && f.seat !== throwerSeat) F.react(f.seat, kind, delay + Math.random() * 180); });
-
-  F.update = dt => {
-    if (!list.length) return;
-    const now = performance.now(), t = now / 1000;
-    for (const f of list) {
-      const want = f.slot >= 0 ? 1 : 0;
-      f.vis += (want - f.vis) * Math.min(1, dt * 5);
-      const on = f.vis > 0.02;
-      f.g.visible = on;
-      if (!on) continue;
-      const sl = SLOTS[Math.max(0, f.slot)];
-      if (f.slot >= 0) { f.px = sl.x; f.py = sl.y; f.yaw = sl.yaw; }
-      // reaktionen (1,6 s)
-      const rt = f.react ? (now - f.t0) / 1000 : 9;
-      if (rt > 1.8) f.react = null;
-      const k = f.react ? Math.sin(Math.min(1, rt / 1.8) * Math.PI) : 0;
-      const bob = Math.sin(t * 1.7 + f.phase) * 0.012;
-      let jump = 0, lean = 0, hands;
-      const idle = [[-0.29, 0.62 + Math.sin(t * 1.7 + f.phase + 1) * 0.02, 0.06], [0.29, 0.62 + Math.sin(t * 1.7 + f.phase + 2.2) * 0.02, 0.06]];
-      if (f.react === 'cheer') {
-        jump = Math.abs(Math.sin(rt * 7.5)) * 0.16 * k;
-        hands = [[-0.3, 1.55 + Math.sin(rt * 15) * 0.05, 0.05], [0.3, 1.55 + Math.cos(rt * 15) * 0.05, 0.05]];
-      } else if (f.react === 'dismay') {
-        lean = -0.14 * k;
-        hands = [[-0.2, 1.36, 0.12], [0.2, 1.36, 0.12]];
-      } else if (f.react === 'clap') {
-        const c = Math.abs(Math.sin(rt * 11));
-        hands = [[-0.04 - c * 0.1, 0.95, 0.28], [0.04 + c * 0.1, 0.95, 0.28]];
-      }
-      // mjuk övergång mellan vila och reaktion
-      const hp = hands ? idle.map((p, i) => p.map((v, j) => v + (hands[i][j] - v) * Math.min(1, k * 2.2))) : idle;
-      const scale = SIZE * (0.6 + 0.4 * f.vis);
-      f.g.position.set(f.px, bob + jump, -f.py);
-      f.g.scale.setScalar(scale);
-      // vänd mot bordet, lite mot den som kastar; blicken följer pucken
-      f.g.rotation.set(lean, f.yaw, Math.sin(t * 0.9 + f.phase) * 0.02);
-      let headYaw = 0, headPitch = 0;
-      if (look) {
-        const dx = look.x - f.px, dz = -(look.y - f.py), a = Math.atan2(dx, dz) - f.yaw;
-        headYaw = clamp(Math.atan2(Math.sin(a), Math.cos(a)), -0.8, 0.8);
-        headPitch = clamp(0.12 - Math.abs(look.y - f.py) * 0.02, -0.1, 0.25);
-      }
-      f.head.rotation.y += (headYaw - f.head.rotation.y) * Math.min(1, dt * 4);
-      f.head.rotation.x += (headPitch - f.head.rotation.x) * Math.min(1, dt * 4);
-      f.head.position.y = 1.31 + Math.sin(t * 1.7 + f.phase + 0.5) * 0.006;
-      f.hands.forEach((hm, i) => hm.position.set(hp[i][0], hp[i][1], hp[i][2]));
-    }
-  };
-  return F;
-})();
-
-/* ---- 07c-hand.js ---- */
-/* ================= Handen som skjuter pucken ================= */
-// En tecknad vit handske (svävande, som figurernas händer) med en manschett i spelarens färg. Den vilar bakom
-// pucken medan man siktar, följer med när man spänner kastet och skjuter iväg pucken när man släpper.
-// Visas även när andra siktar.
-const Hand = (() => {
-  const H = {};
-  const {R, TOP} = TABLE;
-  let g = null, sleeveMat = null, glove = null, state = null;
-  const SCALE = 1.45, TIP = 0.0245;   // fingertopparna ligger TIP framför handens mitt (i handens mått)
-  // en kapsel (rundad stav) längs z: radie r, längd len (utan ändarna)
-  function capsule(r, len, seg = 10) {
-    const pts = [];
-    for (let i = 0; i <= 6; i++) { const a = -Math.PI / 2 + (i / 6) * Math.PI / 2; pts.push(new THREE.Vector2(Math.cos(a) * r, Math.sin(a) * r - len / 2)); }
-    for (let i = 0; i <= 6; i++) { const a = (i / 6) * Math.PI / 2; pts.push(new THREE.Vector2(Math.cos(a) * r, Math.sin(a) * r + len / 2)); }
-    return new THREE.LatheGeometry(pts, seg).rotateX(Math.PI / 2);   // längs z
-  }
-  function build() {
-    glove = new THREE.MeshStandardMaterial({color: 0xf4f2ee, roughness: 0.55, emissive: 0x1c1a18});
-    sleeveMat = new THREE.MeshStandardMaterial({color: 0xd62d3a, roughness: 0.6, emissive: 0x100808});
-    g = new THREE.Group();
-    const add = (geo, mat, x, y, z, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1) => { const o = new THREE.Mesh(geo, mat); o.position.set(x, y, z); o.rotation.set(rx, ry, rz); o.scale.set(sx, sy, sz); o.userData.noEnv = true; g.add(o); return o; };
-    // handryggen (platt), fyra lite utspärrade fingrar framåt (-z) över pucken och tummen åt sidan (höger hand)
-    add(new THREE.SphereGeometry(1, 22, 14), glove, 0, 0.026, 0.056, 0, 0, 0, 0.05, 0.017, 0.056);
-    const fg = capsule(0.012, 0.04);
-    [-0.033, -0.0115, 0.0105, 0.032].forEach((x, i) => add(fg, glove, x, 0.024, 0.004 - (i === 1 || i === 2 ? 0.007 : 0), 0.32, (i - 1.5) * 0.12, 0));
-    add(capsule(0.013, 0.032), glove, -0.058, 0.018, 0.046, 0.15, 0.75, 0);
-    // en smal rand i spelarens färg vid handleden
-    add(new THREE.TorusGeometry(0.038, 0.007, 8, 24), sleeveMat, 0, 0.027, 0.108, 0, 0, 0, 1, 0.55, 1);
-    g.scale.setScalar(SCALE);
-    g.visible = false;
-    g.traverse(o => { o.renderOrder = -1; });
-    Scene.scene.add(g);
-  }
-  // Visa handen bakom en puck (x, y i bordets mått) i spelarens färg. pull: hur långt kastet är spänt (m).
-  H.at = (x, y, color) => {
-    if (!Scene.scene) return;
-    if (!g) build();
-    if (color) sleeveMat.color.set(color);
-    g.visible = true;
-    state = {x, y, push: 0};
-    place();
-  };
-  function place() {
-    if (!state) return;
-    const {x, y} = state;
-    // fingertopparna mot puckens baksida
-    g.position.set(x, TOP + 0.004, -(y - R - TIP * SCALE - 0.003 + state.push));
-    g.rotation.set(0, 0, 0);
-  }
-  // Släppet: handen följer pucken en bit framåt och drar sig sedan tillbaka
-  H.release = async () => {
-    if (!state || !g) return;
-    const s = state;
-    await Anim.tween(130, t => { if (state !== s) return; s.push = 0.05 * t; place(); });
-    await Anim.tween(260, t => { if (state !== s) return; s.push = 0.05 * (1 - t) - 0.14 * t; place(); g.position.y = TOP + 0.004 + 0.06 * t; g.scale.setScalar(SCALE * (1 - 0.35 * t)); });
-    if (g) g.scale.setScalar(SCALE);
-    if (state === s) H.hide();
-  };
-  H.hide = () => { state = null; if (g) g.visible = false; };
-  return H;
-})();
-
 /* ---- 08-camera.js ---- */
 /* ================= Kameran ================= */
 // Lägen: 'aim' (bakom den som kastar, hela bordet syns), 'follow' (följer pucken längs bordet), 'far' (över
@@ -3213,8 +3005,11 @@ const Aim = (() => {
     m.classList.toggle('on', p > 0.001);
     fill().style.height = (Math.min(1, p) * 100) + '%';
     const pct = $('meterPct');
-    if (pct) { pct.textContent = p > 0.001 && A.help() ? Math.round(p * 100) : ''; pct.style.bottom = (Math.min(1, p) * 100) + '%'; pct.classList.toggle('hard', p > Phys.POWER_EDGE); }
-    fill().classList.toggle('hard', p > Phys.POWER_EDGE);
+    // strecket vid bordets bortre kant (och att färgen skiftar där) bara med hjälp: annars gäller det att känna kastet
+    const help = A.help(), edge = $('meterEdge');
+    if (edge) edge.style.display = help ? '' : 'none';
+    if (pct) { pct.textContent = p > 0.001 && help ? Math.round(p * 100) : ''; pct.style.bottom = (Math.min(1, p) * 100) + '%'; pct.classList.toggle('hard', help && p > Phys.POWER_EDGE); }
+    fill().classList.toggle('hard', help && p > Phys.POWER_EDGE);
     const last = $('meterLast'), lp = A.help() ? lastPower[seat] : null;
     if (last) { last.style.display = lp != null ? '' : 'none'; if (lp != null) last.style.bottom = (lp * 100) + '%'; }
   }
@@ -3265,7 +3060,6 @@ const Aim = (() => {
         const pull = st.p * 0.22;
         const vx = st.x - Math.sin(st.a) * pull, vy = Y0 - Math.cos(st.a) * pull;
         Pucks.set(puckId, vx, vy);
-        Hand.at(vx, vy, opts.color);
         const len = Settings.aim === 'av' ? 0 : A.help() ? L - Y0 - 0.1 : 1.3;
         showLine(st.x, Y0, st.a, st.mode === 'pull' || st.kb ? len : Math.min(len, 1.3), opts.color);
         Cam.aimAt(st.x);
@@ -3278,6 +3072,7 @@ const Aim = (() => {
       const down = e => {
         if (e.button > 0 || st.mode !== 'idle') return;
         Sound.unlock();
+        Sound.primeSpeech();
         st.mode = 'touch'; st.id = e.pointerId; st.sx = e.clientX; st.sy = e.clientY; st.x0 = st.x; st.kb = false;
         st.len = refLen();
         st.scale = worldPerPx();
@@ -3307,7 +3102,7 @@ const Aim = (() => {
           // ticka för varje 5 %, och tydligt vid kanten
           const step = Math.floor(p * 20);
           if (step !== Math.floor(st.p * 20)) { Sound.play('tick', p); if (p > .05) vibrate(4); }
-          if ((p > Phys.POWER_EDGE) !== (st.p > Phys.POWER_EDGE)) { Sound.play('edgeTick'); vibrate(18); }
+          if (A.help() && (p > Phys.POWER_EDGE) !== (st.p > Phys.POWER_EDGE)) { Sound.play('edgeTick'); vibrate(18); }
           st.p = p;
           st.changed();
         }
@@ -3363,7 +3158,7 @@ const Aim = (() => {
         padAim = null;
         if (active === st) active = null;
       }
-      st.cleanup = () => { cleanup(); Hand.hide(); resolve(null); };
+      st.cleanup = () => { cleanup(); resolve(null); };
       layer.addEventListener('pointerdown', down);
       layer.addEventListener('pointermove', move);
       layer.addEventListener('pointerup', up);
@@ -3379,7 +3174,6 @@ const Aim = (() => {
     if (!s) { A.hideLine(); drawMeter(0, -1); padAim = null; return; }
     const pull = (s.p || 0) * 0.22, a = clamp(s.a || 0, -A_MAX, A_MAX), x = clamp(s.x || 0, -HALF + R, HALF - R);
     Pucks.set(puckId, x - Math.sin(a) * pull, Y0 - Math.cos(a) * pull);
-    Hand.at(x - Math.sin(a) * pull, Y0 - Math.cos(a) * pull, color);
     showLine(x, Y0, a, s.p > 0.02 ? 1.6 : 0.8, color);
     Cam.aimAt(x);
     drawMeter(s.p || 0, -1);
@@ -4889,7 +4683,7 @@ const Menu = (() => {
       h('div', {class: 'setrow'}, h('label', null, 'Pubsorl'), slider('ambience')),
       h('h3', null, 'Spelet'),
       h('div', {class: 'setrow'}, h('label', null, 'Siktlinje', h('small', null, 'Den prickade linjen framför pucken')), seg([['kort', 'På'], ['av', 'Av']], Settings.aim === 'av' ? 'av' : 'kort', v => { Settings.aim = v; saveSettings(); })),
-      h('div', {class: 'setrow'}, h('label', null, 'Nybörjarhjälp', h('small', null, 'Kraften i siffror, förra kastets kraft och siktlinjen ända bort. Mot datorn och på samma skärm (alltid i träning, aldrig online).')), toggle(!!Settings.help, v => { Settings.help = v; saveSettings(); })),
+      h('div', {class: 'setrow'}, h('label', null, 'Nybörjarhjälp', h('small', null, 'Strecket för bortre kanten, kraften i siffror, förra kastets kraft och siktlinjen ända bort. Mot datorn och på samma skärm (alltid i träning, aldrig online).')), toggle(!!Settings.help, v => { Settings.help = v; saveSettings(); })),
       h('div', {class: 'setrow'}, h('label', null, 'Slowmotion', h('small', null, 'När pucken kryper mot kanten')), toggle(Settings.slowmo, v => { Settings.slowmo = v; saveSettings(); })),
       h('div', {class: 'setrow'}, h('label', null, 'Speaker', h('small', null, 'En röst ropar ut hängare, omgångar och vinnaren')), toggle(Settings.speaker !== false, v => { Settings.speaker = v; saveSettings(); })),
       h('div', {class: 'setrow'}, h('label', null, 'Vibration'), toggle(Settings.haptics, v => { Settings.haptics = v; saveSettings(); })),
@@ -4919,7 +4713,7 @@ const Menu = (() => {
       h('div', {class: 'diagram', html: diagram}),
       h('h3', null, 'Kasta'),
       h('ul', null, h('li', null, 'Tryck var som helst på skärmen. ', h('b', null, 'Dra åt sidan'), ' för att flytta pucken, ', h('b', null, 'dra nedåt'), ' för att spänna kastet och ', h('b', null, 'släpp'), '. Samma drag ger alltid samma kraft.'),
-        h('li', null, 'Kraftmätaren: upp till den vita linjen glider pucken som längst till kanten. Över linjen blir det hårda slag för att knuffa bort andras puckar.'),
+        h('li', null, 'Kraftmätaren visar hur hårt du drar. Känn efter: för löst och pucken dör före foul-linjen, för hårt och den åker över kanten. Hårda slag knuffar bort andras puckar. (I träningen och med Nybörjarhjälp visar ett streck var bordets bortre kant går.)'),
         h('li', null, 'Drar du snett går kastet snett. Skruven ger en svag kurva. Bordet är välvt som ett riktigt bord: mitt på går pucken rakt, men ju närmare kanten desto mer glider den utåt när den saktar in, och längs kanten hamnar den i rännan. Sikta lite inåt!')),
       h('h3', null, 'Poäng'),
       h('ul', null, h('li', null, 'Hela pucken måste ha passerat ', h('b', null, 'foul-linjen'), ', annars är den död och tas bort.'),
@@ -5107,7 +4901,7 @@ const Game = (() => {
     Sound.music('game');
     Sound.ambience(true);
     Pucks.clear(false);
-    if (m) { Pucks.sync(m); HUD.update(m); Scene.drawBoard(m); Figures.sync(m); }
+    if (m) { Pucks.sync(m); HUD.update(m); Scene.drawBoard(m); }
     // pubturnén: välkommen, bordets egenskaper och stamgästens hälsning
     if (m && m.tour && m.k === 0) {
       const pub = Tour.pub(m), opp = Tour.opp(m);
@@ -5144,8 +4938,6 @@ const Game = (() => {
     HUD.show(false);
     HUD.setLive(null); HUD.setLead([]);
     Pucks.clear(false);
-    Figures.clear();
-    Hand.hide();
     Scene.drawBoard(null);
     if (toMenu) Cam.set('menu');
     document.body.classList.remove('tv', 'controller');
@@ -5181,7 +4973,6 @@ const Game = (() => {
     if (!mm) { m = null; if (why === 'lobby') { const s = S; G.stop(false); Menu.room(s); } return; }
     const fresh = why === 'new' || !m || m.id !== mm.id;
     m = mm;
-    Figures.sync(m);
     if (fresh) { Pucks.clear(false); Aim.resetMemory(); Menu.closeOverlays(); chSums = []; if (!m.challenge) HUD.toast(m.frame === 1 && m.k === 0 ? 'Ny match!' : 'Ikapp', 'gold', 1400); Sound.music('game'); }
     Pucks.sync(m);
     HUD.update(m); Scene.drawBoard(m);
@@ -5199,11 +4990,10 @@ const Game = (() => {
     Pucks.rings([aimId]);
     return o;
   }
-  function clearAimPuck() { if (aimId && Pucks.get(aimId)) Pucks.remove(aimId, 'fast'); aimId = null; remoteAim = null; Aim.showRemote(null, null); Hand.hide(); }
+  function clearAimPuck() { if (aimId && Pucks.get(aimId)) Pucks.remove(aimId, 'fast'); aimId = null; remoteAim = null; Aim.showRemote(null, null); }
 
   function turnIntro(seat) {
     HUD.update(m, {turn: seat});
-    Figures.setTurn(seat);
     Scene.drawBoard(m);
     const key = m.id + ':' + m.k;
     const first = turnKey !== key;
@@ -5359,11 +5149,9 @@ const Game = (() => {
     const po = Pucks.get(sum.id);
     if (po && po.st === 'table' && Time.scale >= .2) {
       const x0 = po.x, y0 = po.y, x1 = ev.input.x;
-      Hand.at(x0, y0, hex(pre, seat));
-      if (y0 < Y0 - 0.005 || Math.abs(x0 - x1) > 0.002) await Anim.tween(clamp((Y0 - y0) * 600, 60, 150), t => { const x = lerp(x0, x1, t), y = lerp(y0, Y0, t); Pucks.set(sum.id, x, y); Hand.at(x, y); }, t => t * t);
-      Hand.release();
+      if (y0 < Y0 - 0.005 || Math.abs(x0 - x1) > 0.002) await Anim.tween(clamp((Y0 - y0) * 600, 60, 150), t => Pucks.set(sum.id, lerp(x0, x1, t), lerp(y0, Y0, t)), t => t * t);
       alive(my);
-    } else Hand.hide();
+    }
     const sim = Phys.create(pre.pucks, {id: sum.id, owner: seat, input: ev.input});
     const shot = sim.p.find(q => q.id === sum.id);
     const tracker = {q: shot};
@@ -5377,7 +5165,6 @@ const Game = (() => {
     Sound.slide(0);
     Sound.duckMusic(false);
     HUD.setLive(null);
-    Figures.lookAt(null);
     m = ev.post;
     // döda puckar (nådde inte foul-linjen) lyfts bort
     const deadIds = sum.dead || [];
@@ -5468,7 +5255,6 @@ const Game = (() => {
         }
         let total = 0;
         sim.p.forEach(q => { if (!q.out) { Pucks.set(q.id, q.x, q.y); total += Math.hypot(q.vx, q.vy); } });
-        if (!focus.out) Figures.lookAt(focus.x, focus.y);
         Sound.slide(skipping ? 0 : total * Math.min(1, rate * 1.5));
         HUD.setLive(sim.p);
         if (sim.done) done(); else requestAnimationFrame(frame);
@@ -5507,33 +5293,23 @@ const Game = (() => {
     const name = m.seats[seat].name, col = hex(m, seat);
     const mine = S.isMine(seat) && !S.cpuHere(seat);
     const shotO = Pucks.get(sum.id);
-    // figurerna vid bordet: den egna sidan jublar, de som blev av med en puck tar sig för huvudet
-    const side = Rules.side(m, seat);
-    const lost = new Set((sum.fell || []).concat(sum.dead || []).map(id => { const q = ev.pre.pucks.find(p => p.id === id); return q ? Rules.side(m, q.owner) : -1; }).filter(sd => sd >= 0 && sd !== side));
     if (sum.shotZone === 4) {
       HUD.toast('Hängare!', 'big', 2200); Sound.play('hanger'); Sound.play('cheer', 1);
       Sound.say('Hängare! Fyra poäng!', 3);
       if (shotO) HUD.float(shotO.x, shotO.y, '4', col, true);
       if (mine) { Stats.hangers++; saveStats(); }
       HUD.confetti([col]);
-      Figures.reactSide(m, side, 'cheer', 250);
-      for (let sd = 0; sd < Rules.sides(m); sd++) if (sd !== side) Figures.reactSide(m, sd, 'clap', 500);
     } else if (sum.knocked >= 2) {
       HUD.toast(sum.knocked >= 3 ? 'Trippelträff!' : 'Dubbelträff!', 'big', 2000); Sound.play('knock'); Sound.play('cheer', .8);
       Sound.say(sum.knocked >= 3 ? 'Trippelträff!' : 'Dubbelträff!', 3);
-      Figures.reactSide(m, side, 'cheer', 250);
-      lost.forEach(sd => Figures.reactSide(m, sd, 'dismay', 300));
     } else if (sum.knocked === 1) {
       HUD.toast('Utslagen!', 'gold', 1500); Sound.play('knock'); Sound.play('ooh');
       if (Math.random() < .35) Sound.say(pick(['Utslagen!', 'Bort med den!', 'Snyggt utslag!']), 1);
-      Figures.reactSide(m, side, 'cheer', 300);
-      lost.forEach(sd => Figures.reactSide(m, sd, 'dismay', 250));
     }
-    else if (sum.fell.includes(sum.id)) { HUD.toast('Över kanten', '', 1300); Sound.play('ooh', .7); Figures.reactSide(m, side, 'dismay', 200); }
+    else if (sum.fell.includes(sum.id)) { HUD.toast('Över kanten', '', 1300); Sound.play('ooh', .7); }
     else if (sum.shotZone === 3) {
       if (shotO) HUD.float(shotO.x, shotO.y, '3', col); Sound.play('point', 3);
       if (Math.random() < .25) Sound.say('Snyggt, tre poäng.', 1);
-      Figures.reactSide(m, side, 'clap', 300);
     }
     if (mine) {
       if (sum.knocked) { Stats.knockouts += sum.knocked; }
@@ -5590,7 +5366,7 @@ const Game = (() => {
     // speakern och figurerna: vem tog omgången?
     const spoken = sd => Rules.sideName(m, sd).replace(/ & /g, ' och ');
     if (m.practice) { /* ingen speaker i träningen */ }
-    else if (fe.leader >= 0 && fe.points[fe.leader] > 0) { Sound.say(`${spoken(fe.leader)} tar omgången, ${fe.points[fe.leader]} ${fe.points[fe.leader] === 1 ? 'poäng' : 'poäng'}.`, 2); Figures.reactSide(m, fe.leader, 'cheer'); }
+    else if (fe.leader >= 0 && fe.points[fe.leader] > 0) { Sound.say(`${spoken(fe.leader)} tar omgången, ${fe.points[fe.leader]} poäng.`, 2); }
     else Sound.say('Inga poäng den här omgången.', 2);
     if (m.practice) { const p = fe.points[0] || 0; if (p > Stats.practiceBest) { Stats.practiceBest = p; saveStats(); if (p > 0) HUD.toast(`Nytt rekord: ${p} poäng!`, 'gold', 2000); } }
     HUD.update(Object.assign({}, m, {frame: fe.frame, n: G.perFrame(m)}), {turn: -1});
@@ -5658,9 +5434,6 @@ const Game = (() => {
         const opp = Tour.opp(m);
         setTimeout(() => { if (S) HUD.bubble(1, iWon ? opp.lose : opp.win); }, 1400);
       }
-      Figures.setTurn(-1);
-      Figures.reactSide(m, w, 'cheer', 200);
-      for (let sd = 0; sd < Rules.sides(m); sd++) if (sd !== w) Figures.reactSide(m, sd, 'clap', 900);
       HUD.confetti([Rules.sideColor(m, w).hex]);
     }
     Cam.set('score');
@@ -5725,7 +5498,7 @@ const Main = (() => {
     last = now;
     Anim.tick(now);
     Cam.update(dt);
-    Pucks.update(dt); Figures.update(dt);
+    Pucks.update(dt);
     if (!Scene.paused && !Scene.noRender && !Scene.pad) Scene.render({bloom: .32, exposure: 1.15, threshold: 2.2});
     // håll bilden flytande: sänk upplösningen om telefonen inte hinner med
     frames++;
@@ -5814,7 +5587,7 @@ const Main = (() => {
   return A;
 })();
 
-if (/[?&]debug\b/.test(location.search)) window.SK = {Game, Net, Mqtt, Rules, Phys, TABLE, AI, Scene, Cam, Pucks, Figures, Hand, Challenges, Tour, Menu, HUD, Aim, Sound, Time, Settings, Profile, Stats, Post, ModelLib, Anim, Bus};
+if (/[?&]debug\b/.test(location.search)) window.SK = {Game, Net, Mqtt, Rules, Phys, TABLE, AI, Scene, Cam, Pucks, Challenges, Tour, Menu, HUD, Aim, Sound, Time, Settings, Profile, Stats, Post, ModelLib, Anim, Bus};
 
 Main.boot();
 })();
